@@ -1,0 +1,132 @@
+---
+title: "Liquid culture OD calibration "
+author: "Andrea Clausen Lind"
+date: "08/05/2023"
+output: html_notebook
+---
+
+## Load libraries
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(viridis)
+library(hrbrthemes)
+library(patchwork)
+filter <- dplyr::filter
+```
+
+## Load data
+Load data. Adapted to the data format output by the Mars analysis program. 
+```{r}
+#Extract file names and paths
+File_path <- "/Users/lindandr/Library/CloudStorage/OneDrive-Chalmers/PhD/Projects/Sensing Outputs/Results/Outputs on agar plates/2023-04-26 M-C-PD-PV/ImageJ_data-72h.xlsx"
+
+# Load data
+df_full <- read_xlsx(File_path, skip = 1, col_names = T)
+head(df_full)
+  
+# Tweak columns to numeric and factors
+#tbl_complete <- 
+#  tbl_complete %>% 
+  #mutate(time_h = as.numeric(time_h)) %>% 
+#  mutate(absorbance = as.numeric(absorbance)) %>% 
+#  mutate(wavelength_nm = as.factor(as.double(wavelength_nm)))
+  #mutate(dilution = factor(dilution, levels = c("diluted", "undiluted")))
+
+# Fix strain name order
+#tbl_complete <- 
+#  tbl_complete %>% 
+#  mutate(strain = factor(strain,levels = c("AMG0-1","AlCG0-1", "APDG0-1", "APVG0-1"),ordered = T))
+  
+#head(tbl_complete)
+
+```
+Calculate R apparent, G apparent, and B apparent of colonies. Use resulting values to calculate R diff, G diff and B diff. 
+```{r}
+df_complete <- 
+  df_full %>% 
+  mutate(Rapp = (Red_mean - ((Green_mean + Blue_mean)/2))/Red_mean,
+         Gapp = (Green_mean-((Red_mean + Blue_mean)/2))/Green_mean,
+         Bapp = (Blue_mean-((Green_mean + Red_mean)/2))/Blue_mean) %>% 
+  group_by(time,induction,media,replicate) %>% 
+  mutate(Rdiff = Rapp - Rapp[strain == "AMG0-1"],
+         Gdiff = Gapp - Gapp[strain == "AMG0-1"],
+         Bdiff = Bapp - Bapp[strain == "AMG0-1"]) %>% 
+  ungroup()
+
+
+
+head(df_complete)
+```
+
+Plot data
+```{r}
+p_lyc <- 
+  df_complete %>% 
+  filter(strain %in% c("AlCG0-1","AlCG0")) %>% 
+  mutate(Rdiff = ifelse(Rdiff < 0, 0, Rdiff)) %>% 
+  mutate(strain = ifelse(strain == "AlCG0","-","+")) %>% 
+  ggplot(aes(x = strain,
+             y = Rdiff)) +
+  geom_bar(aes(fill = induction),position = "dodge", stat = "summary", fun = "mean") +
+  geom_point(color = "black",position = position_dodge2(width = 0.9)) +
+  facet_wrap(vars(media),nrow = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey","darkorange"), name = "Induction") +
+  xlab("Receptor") +
+  ylab(expression(Delta*" Red color [AU]")) +
+  ggtitle("Lycopene (AlCG0)")
+p_lyc
+
+p_prodeox <- 
+  df_complete %>% 
+  filter(strain %in% c("APDG0-1","APDG0")) %>% 
+  mutate(Gdiff = ifelse(Gdiff < 0, 0, Gdiff)) %>% 
+  mutate(strain = ifelse(strain == "APDG0","-","+")) %>% 
+  ggplot(aes(x = strain,
+             y = Gdiff)) +
+  geom_bar(aes(fill = induction),position = "dodge", stat = "summary", fun = "mean") +
+  geom_point(color = "black",position = position_dodge2(width = 0.9)) +
+  facet_wrap(vars(media),nrow = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey","darkgreen"), name = "Induction") +
+  xlab("Receptor") +
+  ylab(expression(Delta*" Green color [AU]")) +
+  ggtitle("Prodeoxyviolacein (APDG0)")
+p_prodeox
+
+p_provio <- 
+  df_complete %>% 
+  filter(strain %in% c("APVG0-1","APVG0")) %>% 
+  mutate(Gdiff = ifelse(Gdiff < 0, 0, Gdiff)) %>% 
+  mutate(strain = ifelse(strain == "APVG0","-","+")) %>% 
+  ggplot(aes(x = strain,
+             y = Gdiff)) +
+  geom_bar(aes(fill = induction),position = "dodge", stat = "summary", fun = "mean") +
+  geom_point(color = "black",position = position_dodge2(width = 0.9)) +
+  facet_wrap(vars(media),nrow = 1) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey","darkolivegreen"), name = "Induction") +
+  xlab("Receptor") +
+  ylab(expression(Delta*" Green color [AU]")) +
+  ggtitle("Proviolacein (APVG0)")
+p_provio
+```
+
+Combineplots and save 
+```{r,eval = F, width = 12}
+
+plot_agar <-
+p_lyc / p_prodeox / p_provio
+
+ggsave(plot_agar, filename = "Figures/agar_output.pdf",width = 7)
+
+
+```
+
+
+

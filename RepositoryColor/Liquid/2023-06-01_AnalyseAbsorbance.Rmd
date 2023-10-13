@@ -1,0 +1,913 @@
+---
+title: "Colorimentric output analysis"
+author: "Andrea Clausen Lind"
+date: "2023/05/04"
+output: html_notebook
+---
+
+## Load libraries
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(viridis)
+library(hrbrthemes)
+library(broom)
+library(patchwork)
+
+filter <- dplyr::filter
+```
+
+## Load data files
+Load data. Adapted to the data format output by the Mars analysis program.(RUN ONCE)
+```{r,eval=FALSE}
+#Extract file names and paths
+Dir_path <- "./2023-06-01_Absorbance_Fluo/"
+File_path_list <- list.files(Dir_path, full.names = T)
+File_list <- list.files(Dir_path)
+
+sample_time <- 
+  File_list %>% 
+  as_tibble() %>% 
+  mutate(value = gsub("h.xlsx","",value)) %>% 
+  mutate(value = gsub(".*Abs_","",value)) %>% 
+  rename("time" = "value") %>% 
+  pull(time)
+
+tbl_full <- tibble()
+
+# Loop through and load each file one by one
+for (i in 1:length(File_list)) {
+  
+  FileToRead <- File_path_list[i]
+  FileName <- File_list[i]
+  df_file <- read_xlsx(FileToRead, skip = 11, col_names = FALSE) 
+  df_file <- 
+    df_file %>%  
+    select(-"...1", -"...2") %>%
+    distinct() %>%
+    t() %>%
+    row_to_names(row_number = 1) %>%
+    as_tibble() %>%
+    select(-"Blank B") %>%
+    rename(wavelength_nm = "Wavelength [nm]") %>% 
+    pivot_longer(!wavelength_nm, names_to = "sample",values_to = "absorbance") %>% 
+    mutate(sample = gsub(" ", "_",sample), sample = factor(sample))
+  
+  df_file <- 
+    df_file %>% 
+    mutate(time = sample_time[i])
+  
+  tbl_full <- bind_rows(tbl_full,df_file)
+}
+
+
+# Add metadata
+df_meta =
+  read_csv("Metadata.csv") %>% 
+  mutate(sample = gsub(" ","_",sample))
+
+tbl_complete <- 
+  tbl_full %>% 
+  full_join(df_meta,by = "sample")
+
+# Tweak columns 
+tbl_complete <- 
+  tbl_complete %>% 
+  mutate(time = as.integer(time)) %>% 
+  mutate(absorbance = as.numeric(absorbance)) %>% 
+  mutate(induction = factor(induction,levels = c("0 uM","1 uM"), ordered = T)) %>% 
+  mutate(wavelength_nm = as.double(as.character(wavelength_nm))) %>% 
+  mutate(strain = factor(strain,levels = c("AMG0-1","AlCG0-1","APDG0-1","APVG0-1"),ordered = T))
+
+head(tbl_complete)
+
+saveRDS(tbl_complete,file = "./rds_data/tbl_complete.rds")
+
+```
+
+Load processed data instead
+```{r}
+tbl_complete <- readRDS("./rds_data/tbl_complete.rds")
+```
+
+
+Add unique ID to each biological replicate
+```{r}
+tbl_complete <- 
+  tbl_complete %>% 
+  mutate(sample_ID = paste(strain,time,induction,replicate,sep = "_")) %>% 
+  relocate(sample_ID,.before = wavelength_nm)
+```
+
+Extract sensitive and robust wavelengths. Adjust absorbance based on OD correction function. POSTPONE DUE TO LARGE VARIANCE CAUSED BY SMALL DIFFERNECES IN ABSORBANCE
+```{r}
+# Postpone OD correction adjustment.
+ tbl_data <-
+   tbl_complete %>% 
+   filter(wavelength_nm %in% c("395", "450", "520", "600", "750")) %>% 
+   mutate(abs_adj = case_when(
+     wavelength_nm == "395" ~ (0.4832469*absorbance)/(2.5931168-absorbance),
+     wavelength_nm == "450" ~ (0.4645766*absorbance)/(2.4481330-absorbance),
+     wavelength_nm == "520" ~ (0.4541800*absorbance)/(2.3384806-absorbance),
+     wavelength_nm == "600" ~ (0.4587302*absorbance)/(2.2147928-absorbance),
+     wavelength_nm == "750" ~ (0.4594981*absorbance)/(2.0908275-absorbance))) 
+
+
+#Plot both asjusted and unadjusted data to compare and confirm that everyting looks as expected
+plot_adjust_data <-
+  tbl_data %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate)) %>%
+  mutate(wavelength_nm = paste0(wavelength_nm," nm")) %>% 
+  ggplot(aes(
+    x = time,
+    y = abs_adj,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+  facet_grid(vars(wavelength_nm), vars(strain)) +
+   theme_bw() +
+   theme(aspect.ratio = 1) +
+  ylim(0,3) +
+  coord_fixed() +
+  ylab("Absorbance [a.u.]") +
+  xlab("Time [h]") +
+  ggtitle("Data adjusted for absorbance saturation")
+
+plot_adjust_data
+
+plot_unadjust_data <-
+tbl_data %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate)) %>%
+  mutate(wavelength_nm = paste0(wavelength_nm," nm")) %>% 
+  ggplot(aes(
+    x = time,
+    y = absorbance,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+  facet_grid(vars(wavelength_nm), vars(strain)) +
+   theme_bw() +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylim(0,3) +
+  ylab("Adjusted absorbance [a.u.]") +
+  xlab("Time [h]") +
+  ggtitle("Unadjusted data")
+
+plot_unadjust_data
+```
+
+```{r, eval = FALSE}
+plot_abs_adjust <-
+  plot_unadjust_data + plot_adjust_data
+
+ggsave(plot_abs_adjust, filename = "Figures/absAdjust.pdf",width = 15)
+```
+
+Calculate absorbance by colorimetric compounds and plot Note that inflation of certain data ponts using the OD saturation correction resulted in these being out of range of the dataset - in some cases over 1000 - showing that with data this noisy this method for correction of saturated ODs cannot be applied, as small differences caused by pipetting or measurement errors caused by the microplate analysis being taken for one well at the time. Cannot use this method for correction. Will use relative abundance of the compounds instead, compared to a negative control. 
+```{r}
+tbl_data_lyc <-
+  tbl_data %>% 
+  filter(strain %in% c("AMG0-1", "AlCG0-1"),
+         wavelength_nm %in% c("395","520", "600")) %>% 
+  select(-abs_adj) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = absorbance) %>%
+  mutate(A = 395*((1-(10^(abs395nm-abs600nm)))/((395/600)-10^(abs395nm-abs600nm)))) %>% 
+  mutate(B = abs395nm+log10(1-(A/600))) %>% 
+  mutate(ODscat = B-log10(1-(A/520))) %>% 
+  mutate(AbsLyc = abs520nm-ODscat) 
+
+tbl_data_lyc_adj <-
+  tbl_data %>% 
+  filter(strain %in% c("AMG0-1", "AlCG0-1"),
+         wavelength_nm %in% c("395","520", "600")) %>%
+  select(-absorbance) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = abs_adj) %>%
+  mutate(A = 395*((1-(10^(abs395nm-abs600nm)))/((395/600)-10^(abs395nm-abs600nm)))) %>% 
+  mutate(B = abs395nm+log10(1-(A/600))) %>% 
+  mutate(ODscat = B-log10(1-(A/520))) %>% 
+  mutate(AbsLyc = abs520nm-ODscat) 
+
+tbl_data_lyc %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>% 
+  ggplot(aes(
+    x = time,
+    y = AbsLyc,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell (LPC) unadjusted") +
+  xlab("Time [h]") +
+  ggtitle("Unadjusted lycopene data")
+
+tbl_data_lyc_adj %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>% 
+  ggplot(aes(
+    x = time,
+    y = AbsLyc,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell (LPC) adjusted") +
+  xlab("Time [h]") +
+  ggtitle("Adjusted lycopene data")
+
+```
+The non-normalized data does show differences between the induced and uninduced strains for AlCG0-1 strating at 5h. However, the OD saturation makes it impossible to compare the relative Lycopene amount between the strains. The OD correction is however extremely sensitive to variations in the data and inflates measurements points based on small differences in OD, see below. Will try to readjust the OD correction function, but it's unlikely to help. An alternative method could also be to calculate the relative lycopene amount based on the unadjusted data, by subtracting the mean absorbance of the output null strain from that of the lycopene strain. 
+```{r}
+#Calculate means and standard deviations for lycopene
+tbl_data_lyc_mean <-
+  tbl_data_lyc %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsLyc = mean(AbsLyc),
+         sd_AbsLyc = sd(AbsLyc)) %>% 
+  ungroup() 
+
+tbl_data_lyc_adj_mean <-
+  tbl_data_lyc_adj %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsLyc = mean(AbsLyc),
+         sd_AbsLyc = sd(AbsLyc)) %>% 
+  ungroup() 
+
+tbl_data_lyc_mean %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>% 
+  ggplot(aes(
+    x = time,
+    y = mean_AbsLyc,
+    ymin = mean_AbsLyc-sd_AbsLyc,
+    ymax = mean_AbsLyc+sd_AbsLyc,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_ribbon(alpha =0.3) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell") +
+  xlab("Time") +
+  ggtitle("Unadjusted data")
+
+tbl_data_lyc_adj_mean %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>%
+  ggplot(aes(
+    x = time,
+    y = mean_AbsLyc,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell") +
+  xlab("Time") +
+  ggtitle("Adjusted data")
+
+```
+
+Caluclate difference between lycopene strain and null strain in induced/uninduced condition at different timepoints
+```{r}
+tbl_lyc_diff <-
+  tbl_data_lyc_mean %>% 
+  select(-c(abs395nm,abs520nm,abs600nm, A, B, ODscat, sample, sample_ID)) %>% 
+  distinct() %>%  
+  group_by(time, induction,replicate) %>% 
+  mutate(diff_AbsLyc = AbsLyc-AbsLyc[strain=="AMG0-1"]) %>% 
+  ungroup() %>%   
+  group_by(time, induction) %>% 
+  mutate(diff_mean_AbsLyc = mean_AbsLyc-mean_AbsLyc[strain=="AMG0-1"],
+         diff_sd_AbsLyc = sqrt((sd_AbsLyc)^2+(sd_AbsLyc[strain=="AMG0-1"])^2)) %>% 
+  ungroup() 
+
+tbl_lyc_diff %>% 
+  filter(strain == "AlCG0-1") %>% 
+  mutate(group_rep = paste0(induction,"_",strain)) %>%
+  ggplot(aes(
+    x = time,
+    y = diff_mean_AbsLyc,
+    ymin = diff_mean_AbsLyc-diff_sd_AbsLyc,
+    ymax = diff_mean_AbsLyc+diff_sd_AbsLyc,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_ribbon(aes(), alpha=0.3) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("lycopene per cell compared negative control") +
+  xlab("Time") +
+  ggtitle("Unadjusted data")
+
+plot_diff_lyc <-
+  tbl_lyc_diff %>%
+  filter(strain == "AlCG0-1") %>%
+  mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = diff_mean_AbsLyc,
+      ymin = diff_mean_AbsLyc - diff_sd_AbsLyc,
+      ymax = diff_mean_AbsLyc + diff_sd_AbsLyc
+    )
+  ) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsLyc, 
+        group = induction),
+    size = 0.5,
+    color = "black",
+    alpha = 0.4,
+    position = position_dodge(width = 0.9)
+  ) +
+    scale_fill_manual(values = c("grey", "darkorange"), name = "Induction") +
+#geom_errorbar(aes(fill = induction),width=0.2, position=position_dodge(0.9)) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" lycopene absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean AlCG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_lyc
+```
+
+```{r,eval=F}
+ggsave(plot_diff_lyc, filename = "Figures/deltaLyc.pdf",width = 7)
+```
+
+Proceed with data from prodeoxy- and proviolacein strains. These can be analysed together as sensitive and robust wavelengths are the same.
+Tried to calculate prodeoxy-/provioalacein per cell using the adjusted ODs, but again the noise in the data causes infalition of certain measurement points. Calculate the difference compared to the null strain instead, using the mean. 
+```{r}
+tbl_data_pro <-
+  tbl_data %>% 
+  filter(strain %in% c("AMG0-1", "APDG0-1","APVG0-1"),
+         wavelength_nm %in% c("395","450", "750")) %>% 
+  select(-abs_adj) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = absorbance) %>%
+  mutate(A = 395*((1-(10^(abs395nm-abs750nm)))/((395/750)-10^(abs395nm-abs750nm)))) %>% 
+  mutate(B = abs395nm+log10(1-(A/750))) %>% 
+  mutate(ODscat = B-log10(1-(A/450))) %>% 
+  mutate(AbsPro = abs450nm-ODscat) 
+
+tbl_data_pro_adj <-
+  tbl_data %>% 
+  filter(strain %in% c("AMG0-1", "APDG0-1","APVG0-1"),
+         wavelength_nm %in% c("395","450", "750")) %>% 
+  select(-absorbance) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = abs_adj) %>%
+  mutate(A = 395*((1-(10^(abs395nm-abs750nm)))/((395/750)-10^(abs395nm-abs750nm)))) %>% 
+  mutate(B = abs395nm+log10(1-(A/750))) %>% 
+  mutate(ODscat = B-log10(1-(A/450))) %>% 
+  mutate(AbsPro = abs450nm-ODscat) 
+
+tbl_data_pro %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>% 
+  ggplot(aes(
+    x = time,
+    y = AbsPro,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell (LPC) unadjusted") +
+  xlab("Time [h]") +
+  ggtitle("Unadjusted lycopene data")
+
+tbl_data_pro_adj %>% 
+  mutate(group_rep = paste0(induction, "_" ,replicate,"_",strain)) %>% 
+  ggplot(aes(
+    x = time,
+    y = AbsPro,
+    color = induction
+  )) +
+  geom_line(aes(group = group_rep),size = 0.5, alpha = 0.7) +
+  geom_point(size = 0.55) +
+  scale_color_ipsum() +
+   theme_bw() +
+  facet_wrap(vars(strain)) +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab("Lycopene per cell (LPC) adjusted") +
+  xlab("Time [h]") +
+  ggtitle("Adjusted lycopene data")
+
+
+```
+Calculate the mean absorbance for each strain.  
+Subtract null strain values for unduced/uninduced prodeoxy-/proviolacein strains to gett difference after removal of baseline. Do this for unadjusted data only due excessive noise in data adjusted for OD saturation. 
+```{r}
+# Calcuclate mean
+tbl_data_pro_mean <-
+  tbl_data_pro %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsPro = mean(AbsPro),
+         sd_AbsPro = sd(AbsPro)) %>% 
+  ungroup() 
+
+tbl_data_pro_adj_mean <-
+  tbl_data_pro_adj %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsPro = mean(AbsPro),
+         sd_AbsPro = sd(AbsPro)) %>% 
+  ungroup() 
+
+#Plot mean values with standard deviations for unadjusted data
+plot_mean_pro <-
+  tbl_data_pro_mean %>% 
+  mutate(group_rep = paste0(induction,"_",strain)) %>% 
+  mutate(time = as.factor(time)) %>% 
+  ggplot(aes(
+    x = time,
+    y = mean_AbsPro,
+    ymin = mean_AbsPro-sd_AbsPro,
+    ymax = mean_AbsPro+sd_AbsPro, 
+    color = induction)) +
+  geom_line(aes(group=group_rep),size = 0.5, alpha = 0.7) +
+  geom_ribbon(aes(color = induction), alpha =0.3) +    
+  geom_errorbar(aes(fill = induction),width=0.2) +
+  geom_point(size = 0.55) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression("Pro(deoxy)violacein absorbance")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean pro(deoxy)violacein absorbance (unadjusted OD)"))
+
+plot_mean_pro
+
+#Plot mean values with standard deviations for adjusted data
+plot_mean_pro_adj <-
+  tbl_data_pro_adj_mean %>% 
+  mutate(group_rep = paste0(induction,"_",strain)) %>% 
+  mutate(time = as.factor(time)) %>% 
+  ggplot(aes(
+    x = time,
+    y = mean_AbsPro,
+    ymin = mean_AbsPro-sd_AbsPro,
+    ymax = mean_AbsPro+sd_AbsPro, 
+    color = induction)) +
+  geom_line(aes(group=group_rep),size = 0.5, alpha = 0.7) +
+  geom_ribbon(aes(color = induction), alpha =0.3) +    
+  geom_errorbar(aes(fill = induction),width=0.2) +
+  geom_point(size = 0.55) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+   theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression("Pro(deoxy)violacein absorbance")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean pro(deoxy)violacein absorbance (adjusted OD)"))
+
+plot_mean_pro_adj
+
+# Calculate and plot difference
+tbl_pro_diff <-
+  tbl_data_pro_mean %>% 
+  select(-c(abs395nm,abs450nm,abs750nm, A, B, ODscat, sample, sample_ID)) %>% 
+  distinct() %>%
+    group_by(time, induction, replicate) %>% 
+  mutate(diff_AbsPro = AbsPro-AbsPro[strain=="AMG0-1"]) %>% 
+  ungroup() %>%   
+  group_by(time, induction) %>% 
+  mutate(diff_mean_AbsPro = mean_AbsPro-mean_AbsPro[strain=="AMG0-1"]) %>% 
+  mutate(diff_sd_AbsPro = sqrt((sd_AbsPro)^2+(sd_AbsPro[strain=="AMG0-1"])^2)) %>% 
+  ungroup() 
+
+plot_diff_pdeox <-
+  tbl_pro_diff %>%
+  filter(strain == "APDG0-1") %>%
+  mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro)) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        group = induction),
+    size = 0.5,
+    color = "black",
+    alpha = 0.4,
+    position = position_dodge(width = 0.9)
+  ) +
+  scale_fill_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" prodeoxyviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APDG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pdeox
+
+plot_diff_pvio <-
+  tbl_pro_diff %>%
+  filter(strain == "APVG0-1") %>%
+  mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro)) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        group = induction),
+    size = 0.5,
+    color = "black",
+    alpha = 0.4,
+    position = position_dodge(width = 0.9)
+  ) +
+  scale_fill_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" proviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APVG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pvio
+
+
+
+
+```
+
+
+
+Patch together plots and save
+```{r, eval=FALSE}
+plot_diff_bar <-
+  plot_diff_lyc + plot_diff_pdeox + plot_diff_pvio
+
+ggsave(plot_diff_bar, filename = "Figures/deltaBarAll.pdf",width = 15)
+```
+
+```{r}
+
+#Try plotting the diff as lines instead
+plot_diff_lyc_line <-
+  tbl_lyc_diff %>%
+  filter(strain == "AlCG0-1") %>%
+  #mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = diff_mean_AbsLyc,
+      ymin = diff_mean_AbsLyc - diff_sd_AbsLyc,
+      ymax = diff_mean_AbsLyc + diff_sd_AbsLyc,
+      color = induction
+    )
+  ) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsLyc, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_fill_manual(values = c("grey", "darkorange"), name = "Induction") +
+  scale_color_manual(values = c("grey", "darkorange"), name = "Induction") +
+  #geom_errorbar(aes(fill = induction),width=0.2, position=position_dodge(0.9)) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" lycopene absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean AlCG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_lyc_line
+
+plot_diff_pdeox_line <-
+  tbl_pro_diff %>%
+  filter(strain == "APDG0-1") %>%
+ # mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro,
+    color = induction)) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_color_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  scale_fill_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" prodeoxyviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APDG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pdeox_line
+
+
+plot_diff_pvio_line <-
+  tbl_pro_diff %>%
+  filter(strain == "APVG0-1") %>%
+ # mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro,
+    color = induction)) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_color_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  scale_fill_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" proviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APVG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pvio_line
+
+```
+Patch together plots and save
+```{r, eval = FALSE}
+plot_diff_line <-
+  plot_diff_lyc_line + plot_diff_pdeox_line + plot_diff_pvio_line
+
+ggsave(plot_diff_line, filename = "Figures/deltaLineAll.pdf",width = 15)
+```
+
+Attempt using alternative robust and sensitive wavelengths for lycopene respectively prodeoxy an provioalcein data, excluding measurements below 450 to reduce noise and trying out 650 nm as a sensitive wavelength for prodeoxy-and proviolacein. 
+```{r}
+tbl_data2 <-
+   tbl_complete %>% 
+   filter(wavelength_nm %in% c("550", "450", "520", "600", "700"))
+
+tbl_data_lyc2 <-
+  tbl_data2 %>% 
+  filter(strain %in% c("AMG0-1", "AlCG0-1"),
+         wavelength_nm %in% c("700","520", "600")) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = absorbance) %>%
+  mutate(A = 700*((1-(10^(abs700nm-abs600nm)))/((700/600)-10^(abs700nm-abs600nm)))) %>% 
+  mutate(B = abs700nm+log10(1-(A/600))) %>% 
+  mutate(ODscat = B-log10(1-(A/520))) %>% 
+  mutate(AbsLyc = abs520nm-ODscat) 
+
+tbl_data_pro2 <-
+  tbl_data2 %>% 
+  filter(strain %in% c("AMG0-1", "APDG0-1","APVG0-1"),
+         wavelength_nm %in% c("550","450", "700")) %>% 
+  mutate(wavelength_nm = paste0("abs",wavelength_nm,"nm")) %>% 
+  pivot_wider(names_from = wavelength_nm, values_from = absorbance) %>%
+  mutate(A = 550*((1-(10^(abs550nm-abs700nm)))/((550/700)-10^(abs550nm-abs700nm)))) %>% 
+  mutate(B = abs550nm+log10(1-(A/700))) %>% 
+  mutate(ODscat = B-log10(1-(A/450))) %>% 
+  mutate(AbsPro = abs450nm-ODscat) 
+
+tbl_data_lyc_mean2 <-
+  tbl_data_lyc2 %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsLyc = mean(AbsLyc),
+         sd_AbsLyc = sd(AbsLyc)) %>% 
+  ungroup() 
+
+tbl_data_pro_mean2 <-
+  tbl_data_pro2 %>% 
+  group_by(strain, induction, time) %>% 
+  mutate(mean_AbsPro = mean(AbsPro),
+         sd_AbsPro = sd(AbsPro)) %>% 
+  ungroup() 
+
+tbl_lyc_diff2 <-
+  tbl_data_lyc_mean2 %>% 
+  select(-c(abs520nm,abs600nm,abs700nm, A, B, ODscat, sample, sample_ID)) %>% 
+  distinct() %>%  
+  group_by(time, induction,replicate) %>% 
+  mutate(diff_AbsLyc = AbsLyc-AbsLyc[strain=="AMG0-1"]) %>% 
+  ungroup() %>%   
+  group_by(time, induction) %>% 
+  mutate(diff_mean_AbsLyc = mean_AbsLyc-mean_AbsLyc[strain=="AMG0-1"],
+         diff_sd_AbsLyc = sqrt((sd_AbsLyc)^2+(sd_AbsLyc[strain=="AMG0-1"])^2)) %>% 
+  ungroup() 
+
+tbl_pro_diff2 <-
+  tbl_data_pro_mean2 %>% 
+  select(-c(abs550nm,abs450nm,abs700nm, A, B, ODscat, sample, sample_ID)) %>% 
+  distinct() %>%
+    group_by(time, induction, replicate) %>% 
+  mutate(diff_AbsPro = AbsPro-AbsPro[strain=="AMG0-1"]) %>% 
+  ungroup() %>%   
+  group_by(time, induction) %>% 
+  mutate(diff_mean_AbsPro = mean_AbsPro-mean_AbsPro[strain=="AMG0-1"]) %>% 
+  mutate(diff_sd_AbsPro = sqrt((sd_AbsPro)^2+(sd_AbsPro[strain=="AMG0-1"])^2)) %>% 
+  ungroup() 
+```
+
+Plot data generated for alternative robust and sensitive wavelengths
+```{r}
+
+#Try plotting the diff as lines instead
+plot_diff_lyc_line2 <-
+  tbl_lyc_diff2 %>%
+  filter(strain == "AlCG0-1") %>%
+  #mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+      x = time,
+      y = diff_mean_AbsLyc,
+      ymin = diff_mean_AbsLyc - diff_sd_AbsLyc,
+      ymax = diff_mean_AbsLyc + diff_sd_AbsLyc,
+      color = induction
+    )
+  ) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsLyc, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_fill_manual(values = c("grey", "darkorange"), name = "Induction") +
+  scale_color_manual(values = c("grey", "darkorange"), name = "Induction") +
+  #geom_errorbar(aes(fill = induction),width=0.2, position=position_dodge(0.9)) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" lycopene absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean AlCG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_lyc_line2
+
+plot_diff_pdeox_line2 <-
+  tbl_pro_diff2 %>%
+  filter(strain == "APDG0-1") %>%
+ # mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro,
+    color = induction)) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_color_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  scale_fill_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" prodeoxyviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APDG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pdeox_line2
+
+
+plot_diff_pvio_line2 <-
+  tbl_pro_diff2 %>%
+  filter(strain == "APVG0-1") %>%
+ # mutate(time = as.factor(time)) %>%
+  mutate(group_rep = paste0(induction, "_", strain)) %>%
+  ggplot(
+    aes(
+    x = time,
+    y = diff_mean_AbsPro,
+    ymin = diff_mean_AbsPro-diff_sd_AbsPro,
+    ymax = diff_mean_AbsPro+diff_sd_AbsPro,
+    color = induction)) +
+  geom_ribbon(aes(group = induction,
+                  fill = induction),
+              alpha = 0.2,
+              color = NA) +
+  geom_line(aes(group = induction)
+  ) +
+  geom_point(
+    aes(x = time, 
+        y = diff_AbsPro, 
+        color = induction),
+    size = 0.5,
+    alpha = 0.4
+  ) +
+  scale_color_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  scale_fill_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  coord_fixed() +
+  ylab(expression(Delta*" proviolacein absorbance [a.u.]")) +
+  xlab("Time [h]") +
+  ggtitle(expression("Mean APVG0-1 - AMG0-1 (unadjusted OD)"))
+
+plot_diff_pvio_line2
+
+```

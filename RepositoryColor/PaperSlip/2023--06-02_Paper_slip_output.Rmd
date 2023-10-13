@@ -1,0 +1,161 @@
+---
+title: "Paper slip output"
+author: "Andrea Clausen Lind"
+date: "02/06/2023"
+output: html_notebook
+---
+
+## Load libraries
+```{r}
+#install.packages(c("tidyverse","janitor","readxl","viridis","hrbrthemes","patchwork","ggpubr"))
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(viridis)
+library(hrbrthemes)
+library(patchwork)
+library(ggpubr)
+filter <- dplyr::filter
+```
+
+Load data. 
+```{r}
+#Extract file names and paths
+File_path <- "/Users/lindandr/Library/CloudStorage/OneDrive-Chalmers/PhD/Projects/Sensing Outputs/Results/Paper slips/2023-06-02 Induction results/ImageJ_data-PaperSlips.xlsx"
+
+# Load data
+df_full <- read_xlsx(File_path, col_names = T)
+head(df_full)
+  
+
+```
+Calculate R apparent, G apparent, and B apparent of colonies. Use resulting values to calculate R diff, G diff and B diff. 
+```{r}
+df_complete <- 
+  df_full %>% 
+  mutate(Rapp = (Red_mean - ((Green_mean + Blue_mean)/2))/Red_mean,
+         Gapp = (Green_mean-((Red_mean + Blue_mean)/2))/Green_mean,
+         Bapp = (Blue_mean-((Green_mean + Red_mean)/2))/Blue_mean)
+df_lyc <-
+  df_complete %>%
+  filter(strain %in% c("AlCG0", "AlCG0-1")) %>% 
+  group_by(time,induction,replicate) %>% 
+  mutate(Rdiff = Rapp - Rapp[strain == "AlCG0"],
+         Gdiff = Gapp - Gapp[strain == "AlCG0"],
+         Bdiff = Bapp - Bapp[strain == "AlCG0"]) %>% 
+  ungroup()
+
+df_pdeo <-
+  df_complete %>%
+  filter(strain %in% c("APDG0", "APDG0-1")) %>% 
+  group_by(time,induction,replicate) %>% 
+  mutate(Rdiff = Rapp - Rapp[strain == "APDG0"],
+         Gdiff = Gapp - Gapp[strain == "APDG0"],
+         Bdiff = Bapp - Bapp[strain == "APDG0"]) %>% 
+  ungroup()
+
+df_pvio <-
+  df_complete %>%
+  filter(strain %in% c("APVG0", "APVG0-1")) %>% 
+  group_by(time,induction,replicate) %>% 
+  mutate(Rdiff = Rapp - Rapp[strain == "APVG0"],
+         Gdiff = Gapp - Gapp[strain == "APVG0"],
+         Bdiff = Bapp - Bapp[strain == "APVG0"]) %>% 
+  ungroup()
+
+head(df_lyc)
+head(df_pdeo)
+head(df_pvio)
+```
+
+Plot data
+```{r}
+p_lyc <-
+  df_lyc %>%
+  mutate(Rdiff = ifelse(Rdiff < 0, 0, Rdiff)) %>%
+  filter(strain %in% c("AlCG0-1")) %>%
+  ggplot(aes(x = as.factor(time),
+             y = Rdiff)) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(group = induction),
+    size = 0.5,
+    color = "black",
+    position = position_dodge2(width = 0.9)
+  ) +
+  stat_compare_means(aes(label = after_stat(p.signif)), comparisons = list(c("3","6")), method = "t.test", ref.group = "0uM") +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey", "darkorange"), name = "Induction") +
+  xlab("Time [h]") +
+  ylab(expression(Delta * " Red color [a.u.]")) +
+  ggtitle("Lycopene (AlCG0-1 - AlCG0)")
+p_lyc
+
+p_prodeox <-
+  df_pdeo %>%
+  mutate(Gdiff = ifelse(Gdiff < 0, 0, Gdiff)) %>%
+  filter(strain %in% c("APDG0-1")) %>%
+  ggplot(aes(x = as.factor(time),
+             y = Gdiff)) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(group = induction),
+    size = 0.5,
+    color = "black",
+    position = position_dodge2(width = 0.9)
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey", "darkgreen"), name = "Induction") +
+  xlab("Time [h]") +
+  ylab(expression(Delta * " Green color [a.u]")) +
+  ggtitle("Prodeoxyviolacein (APDG0-1 - APDG0)")
+p_prodeox
+
+p_provio <-
+  df_pvio %>%
+  mutate(Gdiff = ifelse(Gdiff < 0, 0, Gdiff)) %>%
+  filter(strain %in% c("APVG0-1")) %>%
+  ggplot(aes(x = as.factor(time),
+             y = Gdiff)) +
+  geom_bar(
+    aes(fill = induction),
+    position = "dodge",
+    stat = "summary",
+    fun = "mean"
+  ) +
+  geom_point(
+    aes(group = induction),
+    size = 0.5,
+    color = "black",
+    position = position_dodge2(width = 0.9)
+  ) +
+  theme_bw() +
+  theme(aspect.ratio = 1) +
+  scale_fill_manual(values = c("grey", "darkolivegreen"), name = "Induction") +
+  xlab("Time [h]") +
+  ylab(expression(Delta * " Green color [a.u]")) +
+  ggtitle("Proviolacein (APVG0-1 - APVG0)")
+p_provio
+```
+
+Combined plot
+```{r,eval = F, fig.width=12}
+plot_paperSlip<-
+  p_lyc + p_prodeox + p_provio
+
+ggsave(plot_paperSlip, filename = "Figures/PaperSlip_output.pdf",width = 15)
+```
+
+

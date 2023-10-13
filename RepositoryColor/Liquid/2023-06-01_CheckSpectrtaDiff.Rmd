@@ -1,0 +1,322 @@
+---
+title: "Investigate difference in absorbance spectra for colorimetric strains"
+author: "Andrea Clausen Lind"
+date: "2023/05/09"
+output: html_notebook
+---
+
+## Load libraries
+```{r}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(viridis)
+library(hrbrthemes)
+filter <- dplyr::filter
+```
+
+## Load data 
+Load data. Adapted to the data format output by the Mars analysis program. (RUN ONCE)
+```{r, eval = FALSE}
+#Extract file names and paths
+Dir_path <- "./2023-06-01_Absorbance_Fluo/"
+File_path_list <- list.files(Dir_path, full.names = T)
+File_list <- list.files(Dir_path)
+
+sample_time <- 
+  File_list %>% 
+  as_tibble() %>% 
+  mutate(value = gsub("h.xlsx","",value)) %>% 
+  mutate(value = gsub(".*UV_","",value)) %>% 
+  rename("time" = "value") %>% 
+  pull(time)
+
+tbl_full <- tibble()
+
+# Loop through and load each file one by one
+for (i in 1:length(File_list)) {
+  
+  FileToRead <- File_path_list[i]
+  FileName <- File_list[i]
+  df_file <- read_xlsx(FileToRead, skip = 11, col_names = FALSE) 
+  df_file <- 
+    df_file %>%  
+    select(-"...1", -"...2") %>%
+    distinct() %>%
+    t() %>%
+    row_to_names(row_number = 1) %>%
+    as_tibble() %>%
+    select(-"Blank B") %>%
+    rename(wavelength_nm = "Wavelength [nm]") %>% 
+    pivot_longer(!wavelength_nm, names_to = "sample",values_to = "absorbance") %>% 
+    mutate(sample = gsub(" ", "_",sample), sample = factor(sample))
+  
+  df_file <- 
+    df_file %>% 
+    mutate(time = sample_time[i])
+  
+  tbl_full <- bind_rows(tbl_full,df_file)
+}
+
+# Add metadata
+df_meta =
+  read_csv("Metadata.csv") %>% 
+  mutate(sample = gsub(" ","_",sample))
+
+tbl_complete <- 
+  tbl_full %>% 
+  full_join(df_meta,by = "sample")
+
+# Tweak columns to numeric and order relevant columns
+tbl_complete <- 
+  tbl_complete %>%  
+  mutate(time = as.integer(time)) %>% 
+  mutate(absorbance = as.numeric(absorbance)) %>% 
+  mutate(induction = factor(induction,levels = c("0 uM","1 uM"), ordered = T)) %>% 
+  mutate(wavelength_nm = as.double(as.character(wavelength_nm))) %>% 
+  mutate(strain = factor(strain,levels = c("AMG0-1","AlCG0-1","APDG0-1","APVG0-1"),ordered = T))
+  
+
+head(tbl_complete)
+
+saveRDS(tbl_complete,file = "./rds_data/tbl_complete_spectra.rds")
+```
+Load processed data instead
+```{r}
+tbl_complete <- readRDS("./rds_data/tbl_complete_spectra.rds")
+```
+
+Add unique ID to each biological replicate
+```{r}
+tbl_complete <- 
+  tbl_complete %>% 
+  mutate(sample_ID = paste(strain,time,sep = "_")) %>% 
+  relocate(sample_ID,.before = wavelength_nm)
+```
+
+
+Calculate average across replicates and conditions. Calculate difference compared to strain without output. 
+```{r}
+
+# Check that u have 3 replicates after grouping
+tbl_complete %>% 
+  group_by(wavelength_nm, sample_ID) %>% 
+  mutate(test = length(replicate)) %>% 
+  ungroup()
+
+# Add mean and sd to absorbance based on normalized respectively non-normalized data
+tbl_complete <- 
+  tbl_complete %>% 
+  group_by(sample_ID, wavelength_nm, induction) %>% 
+  mutate(mean_abs = mean(absorbance),
+         sd_abs = sd(absorbance)) %>% 
+  ungroup()
+
+# Subtract based on mean (non-normalized). Samples are independent.
+tbl_control <- 
+  tbl_complete %>% 
+  filter(strain == "AMG0-1") %>% 
+  select(strain, time, wavelength_nm, mean_abs, induction) %>% 
+  distinct() %>% 
+  mutate(mean_control = mean_abs) %>% 
+  select(-c(mean_abs,strain))
+
+tbl_cases <- 
+  tbl_complete %>% 
+  select(strain, replicate, time, wavelength_nm, absorbance, mean_abs, induction)
+
+# Caluclate the difference between the negative control and the output strains
+tbl_plot <- 
+  tbl_control %>% 
+  full_join(tbl_cases) %>% 
+  mutate(y_plot = absorbance-mean_control,
+         y_plot_mean = mean_abs - mean_control)
+
+head(tbl_plot)
+```
+
+Plot results for all timepoints and wavelenghts
+```{r,fig.width=10}
+head(tbl_plot)
+
+
+plot_diff <- 
+  tbl_plot %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_grid(vars(strain),vars(time)) +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Absorbance with mean AMG0-1 subtracted")
+
+plot_diff
+
+
+plot_diff_6h <- 
+  tbl_plot %>%
+  filter(time == "6") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Absorbance with mean AMG0-1 subtracted at 6 h")
+
+plot_diff_6h
+
+plot_diff_3h <- 
+  tbl_plot %>%
+  filter(time == "3") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Absorbance with mean AMG0-1 subtracted at 3 h")
+
+plot_diff_3h
+
+plot_diff_10h <- 
+  tbl_plot %>%
+  filter(time == "10") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Absorbance with mean AMG0-1 subtracted at 10 h")
+
+plot_diff_10h
+
+plot_diff_24h <- 
+  tbl_plot %>%
+  filter(time == "24") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Absorbance with mean AMG0-1 subtracted at 24 h")
+
+plot_diff_24h
+
+
+
+```
+
+Stitch plots and save data
+```{r,eval=F}
+
+ggsave(plot_diff_24h, filename = "Figures/DiffAbsSpectra_24h.pdf",width = 7)
+
+ggsave(plot_diff, filename = "Figures/DiffAbsSpectra_All.pdf",width = 10)
+```
+
+Make individual plots to match colors
+```{r}
+
+plot_diff_22h_lyc <- 
+  tbl_plot %>%
+  filter(strain %in% c("AlCG0-1")) %>% 
+  filter(time == "24") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkorange"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Lycopene absorbance (mean AlCG0-1 - AMG0-1) at 24 h")
+
+plot_diff_24h_lyc
+
+plot_diff_24h_pdeo <- 
+  tbl_plot %>%
+  filter(strain %in% c("APDG0-1")) %>% 
+  filter(time == "24") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkgreen"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Prodeoxyviolacein absorbance (mean APDG0-1 - AMG0-1) at 24 h")
+
+plot_diff_24h_pdeo
+
+plot_diff_24h_pvio <- 
+  tbl_plot %>%
+  filter(strain %in% c("APVG0-1")) %>% 
+  filter(time == "24") %>%
+  ggplot(aes(
+    x = wavelength_nm,
+    y = y_plot_mean)) +
+  geom_line(aes(color = induction)) +
+  #geom_ribbon(alpha = 0.5,aes(fill = induction)) +
+  facet_wrap(vars(strain)) +
+  theme_bw() +
+    scale_color_manual(values = c("grey","darkolivegreen"), name = "Induction") +
+  theme(aspect.ratio = 1,
+        axis.text.x = element_text(angle = 45,hjust = 1)) +
+  ylab(expression(Delta*" Absorbance [a.u.]")) +
+  xlab("Wavelength [nm]") +
+  ggtitle("Proviolacein absorbance (mean APVG0-1 - AMG0-1) at 24 h")
+
+plot_diff_24h_pdeo
+
+```
+Stitch plots and save data
+```{r,eval=F}
+plot_diff_24h_color <-
+  plot_diff_24h_lyc + plot_diff_24h_pdeo + plot_diff_24h_pvio
+
+ggsave(plot_diff_24h_color, filename = "Figures/DiffAbsSpectra_24h_color.pdf",width = 15)
+
+```
+
